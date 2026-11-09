@@ -1,0 +1,78 @@
+name: 手机手动盘中数据验收
+on:
+  workflow_dispatch:
+    inputs:
+      session_date:
+        description: '北京时间交易日，必须为实际采集当天'
+        required: true
+        default: '2026-11-10'
+      providers:
+        description: '诊断来源；不是选股数据接通开关'
+        required: true
+        type: choice
+        default: both
+        options: [both, tencent-text, sina-text]
+      prepare_reference:
+        description: '本次各请求一次交易所证券列表；未知ST/停牌不填false'
+        type: boolean
+        default: true
+      prepare_only:
+        description: '只生成准备计划，不联网采集；可提前检查程序'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: market-manual-${{ inputs.session_date }}
+  cancel-in-progress: false
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: backend
+      SESSION_DATE: ${{ inputs.session_date }}
+      PROVIDERS: ${{ inputs.providers }}
+      PREPARE_ONLY: ${{ inputs.prepare_only }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 核对实际日期，禁止把其他日期冒充实测
+        run: |
+          python - <<'PY'
+          import datetime, os
+          from zoneinfo import ZoneInfo
+          today=str(datetime.datetime.now(ZoneInfo('Asia/Shanghai')).date())
+          if os.environ['PREPARE_ONLY']!='true' and today!=os.environ['SESSION_DATE']:
+              raise SystemExit('实际北京时间日期与目标日不一致，停止联网。可选择prepare_only检查准备计划。')
+          print('实际北京时间日期：'+today+'；目标：'+os.environ['SESSION_DATE'])
+          PY
+      - name: 可选一次性核对证券身份来源
+        continue-on-error: true
+        if: ${{ inputs.prepare_reference && !inputs.prepare_only }}
+        run: |
+          python -m pip install openpyxl==3.1.5 --retries 0 --timeout 15
+          python research/verification/prepare_session_reference.py
+      - name: 等待并分别验收1450和1455，迟到只记失败
+        run: |
+          ARGS=()
+          if [ "$PREPARE_ONLY" = "true" ]; then ARGS+=(--prepare-only); fi
+          python -m app.market.session_probe \
+            --date "$SESSION_DATE" --slots 14:50,14:55 \
+            --providers "$PROVIDERS" --max-symbols 40 \
+            --calendar research/inputs/exchange-calendar-2026.json \
+            --catalog research/private_inputs/exchange-mainboard-identities.json \
+            --report-root research/session-results \
+            --state-dir research/session-state "${ARGS[@]}"
+      - name: 保留每个时点的真实结果，任务失败也上传
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-acceptance-${{ inputs.session_date }}-${{ github.run_id }}
+          path: |
+            research/session-results/
+            research/evidence/reference-preparation.json
+          if-no-files-found: warn
+          retention-days: 3

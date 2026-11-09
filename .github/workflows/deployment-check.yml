@@ -1,0 +1,45 @@
+name: 部署准备检查
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 检查 Python 语法
+        run: python -m compileall -q backend research/verification
+      - name: 生成离线准备计划
+        run: >-
+          python -m app.market.session_probe
+          --date 2026-11-10 --slots 14:50,14:55
+          --calendar research/inputs/exchange-calendar-2026.json
+          --prepare-only --report-root research/session-results
+      - name: 验证准备结果
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          files = list(Path('research/session-results').glob('*/manifest.json'))
+          assert len(files) == 1, files
+          result = json.loads(files[0].read_text())
+          assert result['status'] == 'prepared_not_collected', result
+          assert result['slots'] == [], result
+          assert result['live_selection_enabled'] is False, result
+          print('准备检查通过；未采集行情。')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-preparation
+          path: research/session-results/
+          if-no-files-found: error
+          retention-days: 3

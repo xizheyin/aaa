@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+research/private_inputs/
+research/session-results/
+research/session-state/
+research/evidence/
